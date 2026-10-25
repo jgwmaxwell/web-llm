@@ -1,3 +1,4 @@
+import { qwenToolModelIds } from "./qwen_tools";
 import log from "loglevel";
 import { ResponseFormat } from "./openai_api_protocols";
 import { LogitProcessor, InitProgressCallback, LogLevel } from "./types";
@@ -342,6 +343,7 @@ export const modelLibURLPrefix =
  * Models that support function calling (i.e. usage of `ChatCompletionRequest.tools`). More to come.
  */
 export const functionCallingModelIds = [
+  ...qwenToolModelIds,
   "Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC",
   "Hermes-2-Pro-Llama-3-8B-q4f32_1-MLC",
   "Hermes-2-Pro-Mistral-7B-q4f16_1-MLC",

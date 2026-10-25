@@ -467,3 +467,95 @@ describe("MLCEngine deterministic integration", () => {
     expect(response.usage?.extra?.prefill_tokens_per_s).toBeGreaterThan(0);
   });
 });
+
+describe("Qwen native tool integration", () => {
+  const model = "Qwen3.5-4B-q4f16_1-MLC";
+  const output =
+    "<tool_call>\n<function=lookup>\n<parameter=query>\njobs\n</parameter>\n</function>\n</tool_call>";
+  const request: ChatCompletionRequest = {
+    model,
+    extra_body: { enable_thinking: false },
+    messages: [{ role: "user", content: "Find jobs" }],
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "lookup",
+          parameters: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+          },
+        },
+      },
+    ],
+  };
+  test("returns structured calls and supports a tool-result follow-up", async () => {
+    const { engine, pipeline } = createEngineWithPipeline(1, model);
+    const message = jest.spyOn(pipeline, "getMessage").mockReturnValue(output);
+    const result = await engine.chatCompletion(request);
+    const choice = result.choices[0];
+    expect(choice.finish_reason).toBe("tool_calls");
+    expect(choice.message.content).toBeNull();
+    const call = choice.message.tool_calls![0];
+    expect(JSON.parse(call.function.arguments)).toEqual({ query: "jobs" });
+    message.mockReturnValue("The jobs field is available.");
+    const follow = await engine.chatCompletion({
+      ...request,
+      messages: [
+        ...request.messages,
+        {
+          role: "assistant",
+          content: choice.message.content,
+          tool_calls: choice.message.tool_calls,
+        },
+        { role: "tool", tool_call_id: call.id, content: "Query.listJobs" },
+      ],
+    });
+    expect(follow.choices[0].finish_reason).toBe("stop");
+    expect(follow.choices[0].message.content).toBe(
+      "The jobs field is available.",
+    );
+    expect(request.messages).toHaveLength(1);
+  });
+  test.each(["stop", "length", "abort"])(
+    "buffers stream and never exposes incomplete calls on %s",
+    async (reason) => {
+      const { engine, pipeline } = createEngineWithPipeline(1, model);
+      jest.spyOn(pipeline, "getMessage").mockReturnValue(output);
+      jest.spyOn(pipeline, "getFinishReason").mockReturnValue(reason);
+      const stream = await engine.chatCompletion({ ...request, stream: true });
+      const chunks: ChatCompletionChunk[] = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      expect(chunks).toHaveLength(1);
+      const final = chunks[0].choices[0];
+      expect(final.finish_reason).toBe(
+        reason === "stop" ? "tool_calls" : reason,
+      );
+      expect(final.delta.content).toBeNull();
+      expect(final.delta.tool_calls?.length ?? 0).toBe(
+        reason === "stop" ? 1 : 0,
+      );
+    },
+  );
+  test("streamed ordinary answers remain ordinary answers", async () => {
+    const { engine, pipeline } = createEngineWithPipeline(1, model);
+    jest.spyOn(pipeline, "getMessage").mockReturnValue("Hello");
+    const stream = await engine.chatCompletion({ ...request, stream: true });
+    const chunks: ChatCompletionChunk[] = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    expect(chunks[0].choices[0].delta.content).toBe("Hello");
+    expect(chunks[0].choices[0].finish_reason).toBe("stop");
+  });
+  test("a parser error releases the lock for the next request", async () => {
+    const { engine, pipeline } = createEngineWithPipeline(1, model);
+    const message = jest
+      .spyOn(pipeline, "getMessage")
+      .mockReturnValue("<tool_call>broken");
+    await expect(engine.chatCompletion(request)).rejects.toThrow();
+    message.mockReturnValue("Hello");
+    expect(
+      (await engine.chatCompletion(request)).choices[0].message.content,
+    ).toBe("Hello");
+  });
+});

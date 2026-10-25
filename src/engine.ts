@@ -1,3 +1,8 @@
+import {
+  isQwenToolModel,
+  prepareQwenTools,
+  parseQwenTools,
+} from "./qwen_tools";
 import * as tvmjs from "@mlc-ai/web-runtime";
 import log from "loglevel";
 import {
@@ -516,6 +521,7 @@ export class MLCEngine implements MLCEngineInterface {
       "tools" in request &&
       request.tools !== undefined &&
       request.tools !== null;
+    const isQwenTools = isFunctionCalling && isQwenToolModel(model);
     try {
       if (isFunctionCalling && !isChatCompletion) {
         throw new Error(
@@ -556,6 +562,8 @@ export class MLCEngine implements MLCEngineInterface {
       // Each emoji is made up of multiples of 4 tokens; when truncated, it is displayed as �, so
       // we skip this delta until a full emoji is rendered
       // TODO(Charlie): This does not consider cases of � not being emoji, need to fix with Streamer
+      // Buffer native tool output until the complete response is validated.
+      if (isQwenTools) return undefined;
       const curMessage = selectedPipeline.getMessage();
       const numTrailingReplacementChar =
         _countTrailingReplacementChar(curMessage);
@@ -645,6 +653,7 @@ export class MLCEngine implements MLCEngineInterface {
     // 3. Last chunk empty marking the end
     // If function calling, use the last chunk to return tool_calls
     let finish_reason = pipeline.getFinishReason()!;
+    let qwenContent: string | null = null;
     let tool_calls:
       | Array<ChatCompletionChunk.Choice.Delta.ToolCall>
       | undefined;
@@ -653,10 +662,20 @@ export class MLCEngine implements MLCEngineInterface {
         // If stopped due to length or abort, cannot output return tool_calls field
         finish_reason = "tool_calls";
         const outputMessage = pipeline.getMessage();
-        tool_calls = getToolCallFromOutputMessage(
-          outputMessage,
-          /*isStreaming=*/ true,
-        ) as Array<ChatCompletionChunk.Choice.Delta.ToolCall>;
+        if (isQwenTools && isChatCompletion) {
+          const parsed = parseQwenTools(outputMessage, request);
+          qwenContent = parsed.content;
+          tool_calls = parsed.tool_calls?.map((call, index) => ({
+            ...call,
+            index,
+          }));
+          if (!tool_calls?.length) finish_reason = "stop";
+        } else {
+          tool_calls = getToolCallFromOutputMessage(
+            outputMessage,
+            /*isStreaming=*/ true,
+          ) as Array<ChatCompletionChunk.Choice.Delta.ToolCall>;
+        }
       }
     } catch (err) {
       await lock.release();
@@ -672,6 +691,7 @@ export class MLCEngine implements MLCEngineInterface {
               ? {
                   role: "assistant",
                   tool_calls: tool_calls,
+                  ...(isQwenTools ? { content: qwenContent } : {}),
                 }
               : {},
             finish_reason: finish_reason,
@@ -802,6 +822,17 @@ export class MLCEngine implements MLCEngineInterface {
       this.getLLMStates("ChatCompletionRequest", request.model);
     const selectedModelType =
       this.loadedModelIdToModelType.get(selectedModelId);
+    if (
+      isQwenToolModel(selectedModelId) &&
+      (request.tools != null ||
+        request.messages.some(
+          (m) =>
+            m.role === "tool" ||
+            (m.role === "assistant" && m.tool_calls?.length),
+        ))
+    ) {
+      request = prepareQwenTools(request);
+    }
     API.postInitAndCheckFieldsChatCompletion(
       request,
       selectedModelId,
@@ -881,12 +912,26 @@ export class MLCEngine implements MLCEngineInterface {
         ) {
           // If stopped due to length or abort, cannot output return tool_calls field
           finish_reason = "tool_calls";
-          tool_calls = getToolCallFromOutputMessage(
-            outputMessage,
-            /*isStreaming=*/ false,
-          );
+          if (isQwenToolModel(selectedModelId)) {
+            const parsed = parseQwenTools(outputMessage, request);
+            tool_calls = parsed.tool_calls;
+            outputMessage = parsed.content ?? "";
+            if (!tool_calls?.length) finish_reason = "stop";
+          } else {
+            tool_calls = getToolCallFromOutputMessage(
+              outputMessage,
+              /*isStreaming=*/ false,
+            );
+          }
         }
 
+        if (
+          isQwenToolModel(selectedModelId) &&
+          isFunctionCalling &&
+          finish_reason !== "stop" &&
+          finish_reason !== "tool_calls"
+        )
+          outputMessage = "";
         choices.push({
           finish_reason: finish_reason,
           index: i,
@@ -897,7 +942,11 @@ export class MLCEngine implements MLCEngineInterface {
             : null,
           message: isFunctionCalling
             ? {
-                content: null,
+                content: isQwenToolModel(selectedModelId)
+                  ? tool_calls?.length
+                    ? outputMessage || null
+                    : outputMessage
+                  : null,
                 tool_calls: tool_calls,
                 role: "assistant",
               }

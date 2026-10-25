@@ -872,6 +872,7 @@ export namespace ChatCompletionNamedToolChoice {
  * functions are present.
  */
 export type ChatCompletionToolChoiceOption =
+  | "required"
   | "none"
   | "auto"
   | ChatCompletionNamedToolChoice;
