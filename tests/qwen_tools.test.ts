@@ -36,6 +36,12 @@ const base: ChatCompletionRequest = {
 describe("Qwen native tools", () => {
   test("accepts normal answers, typed arguments and multiple calls", () => {
     expect(parseQwenTools("Hello", base)).toEqual({ content: "Hello" });
+    expect(parseQwenTools("<think>\n\n</think>\n\nHello", base)).toEqual({
+      content: "Hello",
+    });
+    expect(
+      parseQwenTools("<think>\n\n</think>\n\n" + output, base).content,
+    ).toBeNull();
     const parsed = parseQwenTools(
       "I will look that up.\n" + output + "\n" + output,
       base,

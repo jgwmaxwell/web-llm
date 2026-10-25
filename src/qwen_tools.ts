@@ -171,6 +171,8 @@ export function parseQwenTools(
   content: string | null;
   tool_calls?: ChatCompletionMessageToolCall[];
 } {
+  // The compiled pipeline includes its empty non-thinking prefix in getMessage().
+  output = output.replace(/^\s*<think>\s*<\/think>\s*/, "");
   const text = output.trim();
   const start = text.indexOf("<tool_call>");
   const choice = request.tool_choice ?? "auto";
