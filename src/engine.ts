@@ -825,6 +825,7 @@ export class MLCEngine implements MLCEngineInterface {
     if (
       isQwenToolModel(selectedModelId) &&
       (request.tools != null ||
+        request.tool_choice != null ||
         request.messages.some(
           (m) =>
             m.role === "tool" ||
